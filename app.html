@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
-  <title>Unify – 이미지 통일 도구</title>
+  <title>Unify – 이미지 간단 편집</title>
   <style>
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -50,27 +50,6 @@
     input[type="file"] {
       font-size: 13px;
     }
-    .preset-row {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 4px;
-    }
-    .preset-row label {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 4px 8px;
-      border-radius: 999px;
-      border: 1px solid #ddd;
-      background: #fff;
-      cursor: pointer;
-      font-size: 12px;
-      margin-bottom: 0;
-    }
-    .preset-row input[type="radio"] {
-      margin: 0;
-    }
     .options-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -88,17 +67,6 @@
       width: 70px;
       padding: 2px 4px;
       font-size: 12px;
-    }
-    .slider-row {
-      display: grid;
-      grid-template-columns: 80px 1fr;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      margin-bottom: 4px;
-    }
-    input[type="range"] {
-      width: 100%;
     }
     #runBtn {
       margin-top: 12px;
@@ -140,55 +108,20 @@
 </head>
 <body>
   <div class="app">
-    <h1>Unify – 이미지 스타일 & 크기 통일</h1>
+    <h1>Unify – 이미지 간단 편집</h1>
     <div class="subtitle">
-      기준 이미지 한 장과 여러 이미지를 올리면, 크기·배경·톤·라인 느낌을 한 번에 맞춰줍니다.
+      이미지 한 장 또는 여러 장을 올리고, 배경 제거 / 정사각형 / 리사이즈를 한 번에 처리합니다.
     </div>
 
     <!-- STEP 1. 이미지 업로드 -->
     <div class="section-title">1. 이미지 업로드</div>
     <div class="section-box">
-      <label for="refImage"><strong>기준 이미지 (선/색감 기준이 되는 1장)</strong></label>
-      <input type="file" id="refImage" accept="image/*" />
-
-      <div style="height:8px;"></div>
-
-      <label for="targetImages"><strong>통일할 이미지 (여러 장 가능)</strong></label>
-      <input type="file" id="targetImages" accept="image/*" multiple />
+      <label for="images"><strong>편집할 이미지 (여러 장 업로드 가능)</strong></label>
+      <input type="file" id="images" accept="image/*" multiple />
     </div>
 
-    <!-- STEP 2. 용도 선택 -->
-    <div class="section-title">2. 용도 선택</div>
-    <div class="section-box">
-      <div style="font-size:12px; color:#555;">대략적인 용도를 선택하면 사이즈가 자동으로 맞춰집니다.</div>
-      <div class="preset-row">
-        <label>
-          <input type="radio" name="preset" value="emoji" checked />
-          이모티콘 (360×360 PNG)
-        </label>
-        <label>
-          <input type="radio" name="preset" value="game" />
-          게임 아이콘 (512×512)
-        </label>
-        <label>
-          <input type="radio" name="preset" value="sticker" />
-          스티커 (720×720)
-        </label>
-        <label>
-          <input type="radio" name="preset" value="custom" />
-          직접 설정
-        </label>
-      </div>
-
-      <div style="margin-top:8px; font-size:12px;">
-        목표 길이(px):
-        <input type="number" id="optSize" class="small-input" value="360" min="64" max="2048" />
-        <span style="color:#888;">(프리셋 선택 시 자동 변경)</span>
-      </div>
-    </div>
-
-    <!-- STEP 3. 기본 옵션 -->
-    <div class="section-title">3. 기본 옵션</div>
+    <!-- STEP 2. 편집 옵션 -->
+    <div class="section-title">2. 편집 옵션</div>
     <div class="section-box">
       <div class="options-grid">
         <label>
@@ -200,95 +133,24 @@
           정사각형 캔버스로 맞추기
         </label>
         <label>
-          <input type="checkbox" id="optCenter" checked />
-          중앙 정렬
-        </label>
-        <label>
-          <input type="checkbox" id="optAutoColor" checked />
-          색감 기본 보정
+          <input type="checkbox" id="optResize" checked />
+          크기 통일 (아래 픽셀 값으로)
         </label>
       </div>
-    </div>
-
-    <!-- STEP 4. 고급 옵션 (하지만 한 화면에 보이게) -->
-    <div class="section-title">4. 세부 조정 (선택)</div>
-    <div class="section-box">
-      <div style="font-size:12px; font-weight:600; margin-bottom:4px;">색감 조정</div>
-      <div class="slider-row">
-        <span>채도</span>
-        <input type="range" id="satSlider" min="-50" max="50" value="0" />
-      </div>
-      <div class="slider-row">
-        <span>밝기</span>
-        <input type="range" id="brightSlider" min="-50" max="50" value="0" />
-      </div>
-      <div class="slider-row">
-        <span>대비</span>
-        <input type="range" id="contrastSlider" min="-50" max="50" value="0" />
-      </div>
-
-      <div style="height:8px;"></div>
-
-      <div style="font-size:12px; font-weight:600; margin-bottom:4px;">라인/윤곽선</div>
-      <div class="slider-row">
-        <span>라인 강조</span>
-        <input type="range" id="lineSlider" min="0" max="100" value="20" />
-      </div>
-
-      <div style="height:8px;"></div>
-
-      <div style="font-size:12px; font-weight:600; margin-bottom:4px;">스타일 느낌</div>
-      <div class="options-grid">
-        <label>
-          <input type="checkbox" id="styleSoft" />
-          색을 조금 더 부드럽게
-        </label>
-        <label>
-          <input type="checkbox" id="styleFlat" />
-          명암 줄이고 플랫하게
-        </label>
-        <label>
-          <input type="checkbox" id="styleStrong" />
-          색 대비를 강하게
-        </label>
+      <div style="margin-top:8px; font-size:12px;">
+        목표 길이(px):
+        <input type="number" id="optSize" class="small-input" value="360" min="64" max="2048" />
+        <span style="color:#888;">(정사각형이면 360×360처럼 처리)</span>
       </div>
     </div>
 
     <!-- 실행 버튼 -->
-    <button id="runBtn">이미지 통일하기</button>
+    <button id="runBtn">이미지 편집하기</button>
 
     <!-- 결과 영역 -->
     <div id="resultArea"></div>
   </div>
 
-  <script>
-    // 아주 간단한 프리셋 -> 사이즈 반영 로직 (나중에 자유롭게 바꿔도 됨)
-    document.addEventListener("DOMContentLoaded", () => {
-      const sizeInput = document.getElementById("optSize");
-      const presetRadios = document.querySelectorAll("input[name='preset']");
-
-      const presetToSize = {
-        emoji: 360,
-        game: 512,
-        sticker: 720,
-      };
-
-      presetRadios.forEach((r) => {
-        r.addEventListener("change", () => {
-          if (!r.checked) return;
-          if (r.value in presetToSize) {
-            sizeInput.value = presetToSize[r.value];
-          }
-        });
-      });
-
-      // 여기서 /api/unify 호출하는 기존 JS를 연결하면 됨
-      const runBtn = document.getElementById("runBtn");
-      runBtn.addEventListener("click", () => {
-        alert("여기서 /api/unify 호출 로직 연결하면 돼! (지금은 UI 테스트용 알림)");
-      });
-    });
-  </script>
+  <script src="app.js"></script>
 </body>
 </html>
-<script src="app.js"></script>
