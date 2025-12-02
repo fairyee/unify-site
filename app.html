@@ -80,13 +80,13 @@
       box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     }
 
-    /* ✅ 여기서부터 결과 미리보기 박스 */
-    .result-preview {
+    /* ✅ 바깥: 체크무늬 (투명 확인용) */
+    .result-preview-frame {
       width: 260px;
       height: 260px;
       border-radius: 4px;
 
-      /* 투명 배경 확인용 체크무늬 */
+      /* 체크무늬 패턴 */
       background-color: #f0f0f0;
       background-image:
         linear-gradient(45deg,
@@ -95,7 +95,16 @@
           #d0d0d0 75%, transparent 75%, transparent);
       background-size: 16px 16px;
 
-      /* 실제 결과 이미지는 background-image 로 입혀짐 */
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    /* ✅ 안쪽: 결과 PNG를 올리는 레이어 */
+    .result-preview-img {
+      width: 100%;
+      height: 100%;
       background-repeat: no-repeat;
       background-position: center;
       background-size: contain;
@@ -337,14 +346,19 @@
           return;
         }
 
-        // 🔽 이미지 + 다운로드 버튼 (미리보기는 div 배경으로)
+        // 🔽 이미지 + 다운로드 버튼 (체커보드 + PNG 두 레이어)
         data.images.forEach((src, index) => {
           const item = document.createElement("div");
           item.className = "result-item";
 
-          const preview = document.createElement("div");
-          preview.className = "result-preview";
-          preview.style.backgroundImage = `url('${src}')`;
+          const frame = document.createElement("div");
+          frame.className = "result-preview-frame";
+
+          const imgDiv = document.createElement("div");
+          imgDiv.className = "result-preview-img";
+          imgDiv.style.backgroundImage = `url('${src}')`;
+
+          frame.appendChild(imgDiv);
 
           const btn = document.createElement("button");
           btn.type = "button";
@@ -360,7 +374,7 @@
             a.remove();
           });
 
-          item.appendChild(preview);
+          item.appendChild(frame);
           item.appendChild(btn);
           resultBox.appendChild(item);
         });
