@@ -1,13 +1,9 @@
 // api/unify.js
 // 업로드된 이미지를 편집해서 PNG dataURL로 돌려주는 Vercel Serverless Function (CommonJS)
 
-// ─────────────────────────────
-//  의존성
-// ─────────────────────────────
 const formidable = require("formidable");
 const fs = require("fs");
 const sharp = require("sharp");
-const { removeBackground } = require("@imgly/background-removal-node");
 
 // Vercel: sharp 쓰려면 node 런타임 지정
 module.exports.config = {
@@ -61,7 +57,6 @@ function createTextSVG(width, height, text, fontSize, color, position) {
 //  메인 Handler
 // ─────────────────────────────
 module.exports = (req, res) => {
-  // 메서드 체크
   if (req.method !== "POST") {
     res.statusCode = 405;
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -85,18 +80,18 @@ module.exports = (req, res) => {
       //  폼 값 읽기
       // ─────────────────────────────
       const doResize = fields.doResize === "1";
-      let width = parseInt(fields.width || "512", 10) || 512;
-      let height = parseInt(fields.height || "512", 10) || 512;
+      const width = parseInt(fields.width || "512", 10) || 512;
+      const height = parseInt(fields.height || "512", 10) || 512;
 
       const keepRatio = fields.keepRatio === "1";
       let fitMode = fields.fitMode || "contain"; // contain / cover / fill
       if (!keepRatio) {
-        // 비율 유지 안하면 강제 fill 사용
+        // 비율 유지 끄면 강제 fill
         fitMode = "fill";
       }
 
-      // ✅ 이제 이 플래그는 "AI 배경 제거"를 의미
-      const useAiBackgroundRemoval = fields.makeTransparent === "1";
+      // ✅ 이 플래그: "배경 투명 처리" (어떤 색이든)
+      const makeTransparent = fields.makeTransparent === "1";
 
       const brightness = Number(fields.brightness || "0"); // -50 ~ 50
       const saturation = Number(fields.saturation || "0"); // -50 ~ 50
@@ -130,44 +125,20 @@ module.exports = (req, res) => {
       for (const file of items) {
         if (!file) continue;
 
-        // 1) 원본 버퍼 읽기
         let inputBuffer = fs.readFileSync(file.filepath);
 
-        // 2) AI 배경 제거 (remove.bg 비슷한 오픈소스)
-        if (useAiBackgroundRemoval) {
-          try {
-            // background-removal-node는 Blob 또는 ArrayBuffer를 돌려줌
-            const blobOrArrayBuffer = await removeBackground(inputBuffer);
-
-            if (blobOrArrayBuffer && typeof blobOrArrayBuffer.arrayBuffer === "function") {
-              // Blob 케이스
-              const ab = await blobOrArrayBuffer.arrayBuffer();
-              inputBuffer = Buffer.from(ab);
-            } else if (blobOrArrayBuffer instanceof ArrayBuffer) {
-              // ArrayBuffer 케이스
-              inputBuffer = Buffer.from(blobOrArrayBuffer);
-            } else if (Buffer.isBuffer(blobOrArrayBuffer)) {
-              // 혹시 바로 Buffer를 주는 버전
-              inputBuffer = blobOrArrayBuffer;
-            }
-          } catch (bgErr) {
-            console.error("Background removal error (fallback to original):", bgErr);
-            // 실패해도 그냥 원본으로 진행 (죽지 않게)
-          }
-        }
-
-        // 3) sharp로 로드
+        // 1) sharp로 로드
         let img = sharp(inputBuffer).ensureAlpha();
 
-        // 4) 크기/비율/맞추는 방식 처리
+        // 2) 크기/비율/맞추는 방식 처리
         if (doResize) {
           img = img.resize(width, height, {
-            fit: fitMode, // contain / cover / fill
+            fit: fitMode,
             background: { r: 0, g: 0, b: 0, alpha: 0 },
           });
         }
 
-        // 5) 색감 & 대비 조정
+        // 3) 색감 & 대비 조정
         const modBright = 1 + brightness / 100; // 0.5 ~ 1.5
         const modSat = 1 + saturation / 100; // 0.5 ~ 1.5
         const modHue = hue; // -180 ~ 180
@@ -180,39 +151,59 @@ module.exports = (req, res) => {
 
         if (contrast !== 0) {
           const c = contrast / 100; // -0.5 ~ 0.5
-          img = img.linear(1 + c, -128 * c); // 중간값 128 기준
+          img = img.linear(1 + c, -128 * c);
         }
 
-        // 6) raw 픽셀 접근 (선 굵기/색 조정)
+        // 4) raw 픽셀 접근 (배경 제거 + 선 처리)
         let { data, info } = await img.raw().toBuffer({ resolveWithObject: true });
         const w = info.width;
         const h = info.height;
         const channels = info.channels; // 보통 4 (RGBA)
 
-        const thresholdLine = 90; // 어두운 선 기준
+        // 배경 기준 색: 첫 픽셀 (좌상단)
+        let bgR = 255, bgG = 255, bgB = 255;
+        if (makeTransparent && w > 0 && h > 0) {
+          bgR = data[0];
+          bgG = data[1];
+          bgB = data[2];
+        }
+        const bgTolerance = 40; // 값 키우면 더 많이 지움
+
+        const thresholdLine = 140; // "선"이라고 보는 어두운 기준
         const doLine = lineStrength !== 0 || !!lineColor;
         const strength = lineStrength / 50; // -1 ~ 1
 
-        if (doLine) {
-          for (let y = 0; y < h; y++) {
-            for (let x = 0; x < w; x++) {
-              const idx = (y * w + x) * channels;
-              const r = data[idx];
-              const g = data[idx + 1];
-              const b = data[idx + 2];
-              const aIndex = idx + 3;
-              const a = data[aIndex];
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const idx = (y * w + x) * channels;
+            const r = data[idx];
+            const g = data[idx + 1];
+            const b = data[idx + 2];
+            const aIndex = idx + 3;
+            const a = data[aIndex];
+
+            if (a === 0) continue; // 이미 투명
+
+            // ── 4-1) 배경 제거: 배경 기준 색과 비슷하면 투명
+            if (makeTransparent) {
+              const dr = Math.abs(r - bgR);
+              const dg = Math.abs(g - bgG);
+              const db = Math.abs(b - bgB);
+              if (dr < bgTolerance && dg < bgTolerance && db < bgTolerance) {
+                data[aIndex] = 0;
+                continue; // 이 픽셀은 여기서 끝
+              }
+            }
+
+            // ── 4-2) 선 처리
+            if (doLine) {
               const avg = (r + g + b) / 3;
-
-              if (a === 0) continue; // 완전 투명 픽셀은 스킵
-
-              // "선"이라고 보는 픽셀
               if (avg < thresholdLine) {
                 let nr = r;
                 let ng = g;
                 let nb = b;
 
-                // 선 굵기 느낌: 진하게 / 연하게
+                // 선 진하게 / 연하게
                 if (strength > 0) {
                   const factor = 1 + strength * 0.8;
                   nr = Math.max(0, r / factor);
@@ -245,7 +236,7 @@ module.exports = (req, res) => {
           raw: { width: w, height: h, channels },
         });
 
-        // 7) 텍스트 추가 (SVG overlay)
+        // 5) 텍스트 오버레이
         let outBuffer;
         if (overlayText && overlayText.trim().length > 0) {
           const svg = createTextSVG(w, h, overlayText, textSize, textColor, textPosition);
@@ -270,8 +261,9 @@ module.exports = (req, res) => {
     } catch (e) {
       console.error("Processing error:", e);
       res.statusCode = 500;
+      // 에러 내용을 그대로 보내서 Network 탭에서 볼 수 있게
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end("Image processing error");
+      res.end("Image processing error: " + e.message);
     }
   });
 };
