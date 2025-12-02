@@ -4,7 +4,7 @@ const formidable = require("formidable");
 const fs = require("fs");
 const sharp = require("sharp");
 
-// 이 함수가 실제 핸들러
+// 메인 핸들러 함수
 function handler(req, res) {
   // 메서드 체크
   if (req.method !== "POST") {
@@ -211,7 +211,7 @@ function handler(req, res) {
   });
 }
 
-// 런타임 설정 (sharp 사용을 위한 Node 런타임 지정)
+// Vercel용 export
 module.exports = handler;
 module.exports.config = {
   runtime: "nodejs18.x",
