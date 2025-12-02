@@ -1,256 +1,258 @@
-<!doctype html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8" />
-  <title>Unify – 이미지 편집기</title>
+// api/unify.js – 업로드된 이미지를 편집해서 PNG dataURL로 돌려주는 Vercel 함수 (CommonJS 버전)
+
+// Vercel Node.js Serverless Function에서는 require / module.exports 방식이 안전함
+const formidable = require("formidable");
+const fs = require("fs");
+const sharp = require("sharp");
+
+// Vercel에게 "이 함수는 Node 런타임에서 돌려라"라고 알려줌 (sharp 쓰려면 필요)
+module.exports.config = {
+  runtime: "nodejs18.x",
+};
+
+function getLineColorRGB(name) {
+  switch (name) {
+    case "brown":
+      return { r: 80, g: 50, b: 30 };
+    case "navy":
+      return { r: 25, g: 35, b: 80 };
+    case "white":
+      return { r: 245, g: 245, b: 245 };
+    default:
+      return null; // original
+  }
+}
+
+module.exports = (req, res) => {
+  // 메서드 체크
+  if (req.method !== "POST") {
+    res.statusCode = 405;
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.end("Method not allowed");
+    return;
+  }
+
+  const form = formidable({ multiples: true });
+
+  form.parse(req, async (err, fields, files) => {
+    if (err) {
+      console.error("Form parse error:", err);
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.end("Form parse error");
+      return;
+    }
+
+    try {
+      // ─────────────────────────────
+      //  폼 값 읽기
+      // ─────────────────────────────
+      const doResize = fields.doResize === "1";
+      const width = parseInt(fields.width || "512", 10) || 512;
+      const height = parseInt(fields.height || "512", 10) || 512;
+      const keepRatio = fields.keepRatio === "1";
+      let fitMode = fields.fitMode || "contain";
+      const makeTransparent = fields.makeTransparent === "1";
+
+      const brightness = Number(fields.brightness || "0"); // -50 ~ 50
+      const saturation = Number(fields.saturation || "0"); // -50 ~ 50
+      const contrast = Number(fields.contrast || "0");     // -50 ~ 50
+      const hue = Number(fields.hue || "0");               // -180 ~ 180
+
+      const lineStrength = Number(fields.lineStrength || "0"); // -50 ~ 50
+      const lineColorName = fields.lineColor || "original";
+      const lineColor = getLineColorRGB(lineColorName);
+
+      const overlayText = (fields.overlayText || "").toString();
+      const textSize = parseInt(fields.textSize || "32", 10) || 32;
+      const textColorName = fields.textColor || "white";
+      const textPosition = fields.textPosition || "bottom";
+
+      const textColorMap = {
+        white: "#ffffff",
+        black: "#000000",
+        brown: "#553322",
+      };
+      const textColor = textColorMap[textColorName] || "#ffffff";
+
+      // fitMode 정리 (sharp 옵션용)
+      if (fitMode !== "contain" && fitMode !== "cover" && fitMode !== "fill") {
+        fitMode = "contain";
+      }
+
+      // images 필드를 배열로 정규화
+      const raw = files.images;
+      const items = Array.isArray(raw) ? raw : [raw].filter(Boolean);
+
+      const outImages = [];
+
+      for (const file of items) {
+        if (!file) continue;
+
+        const inputBuffer = fs.readFileSync(file.filepath);
+        let img = sharp(inputBuffer).ensureAlpha();
+
+        // ─────────────────────────────
+        // 1) 크기/비율/맞추는 방식 처리
+        // ─────────────────────────────
+        if (doResize) {
+          // keepRatio는 fitMode가 contain/cover일 때 이미 처리되기 때문에,
+          // 여기서는 fitMode만 sharp에 넘겨줌.
+          // fill은 비율 무시하고 강제 늘이기.
+          img = img.resize(width, height, {
+            fit: fitMode, // contain / cover / fill
+            background: { r: 0, g: 0, b: 0, alpha: 0 },
+          });
+        }
+
+        // ─────────────────────────────
+        // 2) 색감 & 대비 조정
+        // ─────────────────────────────
+        const modBright = 1 + brightness / 100;   // 0.5 ~ 1.5
+        const modSat = 1 + saturation / 100;      // 0.5 ~ 1.5
+        const modHue = hue;                       // -180 ~ 180
+
+        img = img.modulate({
+          brightness: modBright,
+          saturation: modSat,
+          hue: modHue,
+        });
+
+        if (contrast !== 0) {
+          const c = contrast / 100; // -0.5 ~ 0.5
+          img = img.linear(1 + c, -128 * c); // 128 기준 대비 조절
+        }
+
+        // ─────────────────────────────
+        // 3) raw 픽셀 접근 (배경 제거, 라인 처리)
+        // ─────────────────────────────
+        let { data, info } = await img.raw().toBuffer({ resolveWithObject: true });
+        const w = info.width;
+        const h = info.height;
+        const channels = info.channels; // 일반적으로 4 (RGBA)
+
+        const thresholdBg = 240;  // 밝은 배경 기준
+        const thresholdLine = 90; // 선이라고 보는 어두운 기준
+
+        const doLine = lineStrength !== 0 || !!lineColor;
+        const strength = lineStrength / 50; // -1 ~ 1
+
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const idx = (y * w + x) * channels;
+            const r = data[idx];
+            const g = data[idx + 1];
+            const b = data[idx + 2];
+            const aIndex = idx + 3;
+            const a = data[aIndex];
+
+            const avg = (r + g + b) / 3;
+
+            // 3-1) 배경 제거 (밝은 영역 → 알파 0)
+            if (makeTransparent && avg >= thresholdBg) {
+              data[aIndex] = 0;
+              continue;
+            }
+
+            if (!doLine) continue;
+            if (a === 0) continue; // 이미 투명하면 패스
+
+            // "선"으로 보는 조건
+            if (avg < thresholdLine) {
+              let nr = r;
+              let ng = g;
+              let nb = b;
+
+              // 라인 굵기 느낌 (진하게/연하게)
+              if (strength > 0) {
+                const factor = 1 + strength * 0.8;
+                nr = Math.max(0, r / factor);
+                ng = Math.max(0, g / factor);
+                nb = Math.max(0, b / factor);
+              } else if (strength < 0) {
+                const factor = 1 + (-strength) * 0.8;
+                nr = Math.min(255, r * factor);
+                ng = Math.min(255, g * factor);
+                nb = Math.min(255, b * factor);
+              }
+
+              // 선 색 변경
+              if (lineColor) {
+                nr = lineColor.r;
+                ng = lineColor.g;
+                nb = lineColor.b;
+              }
+
+              data[idx] = nr;
+              data[idx + 1] = ng;
+              data[idx + 2] = nb;
+            }
+          }
+        }
+
+        // raw 데이터를 다시 sharp 이미지로 감싸기
+        img = sharp(data, {
+          raw: {
+            width: w,
+            height: h,
+            channels,
+          },
+        });
+
+        // ─────────────────────────────
+        // 4) 텍스트 추가 (SVG overlay)
+        // ─────────────────────────────
+        let outBuffer;
+        if (overlayText && overlayText.trim().length > 0) {
+          const svg = createTextSVG(w, h, overlayText, textSize, textColor, textPosition);
+          const svgBuffer = Buffer.from(svg);
+
+          outBuffer = await img
+            .composite([{ input: svgBuffer, top: 0, left: 0 }])
+            .png()
+            .toBuffer();
+        } else {
+          outBuffer = await img.png().toBuffer();
+        }
+
+        const base64 = "data:image/png;base64," + outBuffer.toString("base64");
+        outImages.push(base64);
+      }
+
+      // 최종 응답
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(JSON.stringify({ images: outImages }));
+    } catch (e) {
+      console.error("Processing error:", e);
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.end("Image processing error");
+    }
+  });
+};
+
+// 텍스트 오버레이용 SVG 생성
+function createTextSVG(width, height, text, fontSize, color, position) {
+  const safeText = String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  let y = height * 0.9; // 기본: 아래 중앙
+  if (position === "top") {
+    y = height * 0.15;
+  }
+
+  return `
+<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
   <style>
-    body {
+    .overlay-text {
+      fill: ${color};
+      font-size: ${fontSize}px;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f5f5f7;
-      margin: 0;
-      padding: 24px;
-      display: flex;
-      justify-content: center;
-    }
-    .app {
-      max-width: 980px;
-      width: 100%;
-      background: #ffffff;
-      border-radius: 12px;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.08);
-      padding: 24px 24px 32px;
-      box-sizing: border-box;
-    }
-    h1 {
-      font-size: 22px;
-      margin: 0 0 4px;
-    }
-    .subtitle {
-      color: #666;
-      font-size: 13px;
-      margin-bottom: 16px;
-    }
-    .section-title {
-      font-weight: 600;
-      margin-top: 16px;
-      margin-bottom: 6px;
-    }
-    .section-box {
-      border: 1px solid #e0e0e0;
-      border-radius: 10px;
-      padding: 12px 14px;
-      margin-bottom: 12px;
-      background: #fafafa;
-    }
-    label {
-      font-size: 13px;
-      display: block;
-      margin-bottom: 6px;
-    }
-    input[type="file"] {
-      font-size: 13px;
-    }
-    .row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px 16px;
-      align-items: center;
-      font-size: 12px;
-    }
-    .small-input {
-      width: 70px;
-      padding: 2px 4px;
-      font-size: 12px;
-    }
-    .options-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 4px 12px;
-      margin-top: 6px;
-    }
-    .options-grid label {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      margin-bottom: 0;
-    }
-    .slider-row {
-      display: grid;
-      grid-template-columns: 80px 1fr 40px;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      margin-bottom: 4px;
-    }
-    input[type="range"] {
-      width: 100%;
-    }
-    select {
-      font-size: 12px;
-      padding: 2px 4px;
-    }
-    #runBtn {
-      margin-top: 12px;
-      padding: 8px 16px;
-      font-size: 14px;
-      border-radius: 999px;
-      border: none;
-      background: #111827;
-      color: #fff;
-      cursor: pointer;
-    }
-    #runBtn:hover {
-      background: #1f2937;
-    }
-    #resultArea {
-      margin-top: 20px;
-      border-top: 1px solid #e5e5e5;
-      padding-top: 14px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-    }
-    .result-item {
-      border: 1px solid #e0e0e0;
-      border-radius: 8px;
-      padding: 8px;
-      background: #fff;
-      max-width: 220px;
-      text-align: center;
-      font-size: 12px;
-    }
-    .result-item img {
-      max-width: 200px;
-      max-height: 200px;
-      display: block;
-      margin: 0 auto 4px;
     }
   </style>
-</head>
-<body>
-  <div class="app">
-    <h1>Unify – 이미지 편집기</h1>
-    <div class="subtitle">
-     배경 제거, 크기 조절, 색 보정, 텍스트 추가를 한 번에
-    </div>
-
-    <!-- STEP 1. 이미지 업로드 -->
-    <div class="section-title">1. 이미지 업로드</div>
-    <div class="section-box">
-      <label for="images"><strong>편집할 이미지 (여러 장 선택 가능)</strong></label>
-      <input type="file" id="images" accept="image/*" multiple />
-    </div>
-
-    <!-- STEP 2. 크기 & 배경 -->
-    <div class="section-title">2. 크기 & 배경</div>
-    <div class="section-box">
-      <div class="row" style="margin-bottom:8px;">
-        <span>목표 크기(px):</span>
-        <span>가로</span>
-        <input type="number" id="width" class="small-input" value="512" min="16" max="4096" />
-        <span>세로</span>
-        <input type="number" id="height" class="small-input" value="512" min="16" max="4096" />
-        <label style="display:flex;align-items:center;gap:4px;margin-bottom:0;">
-          <input type="checkbox" id="keepRatio" checked />
-          비율 유지
-        </label>
-      </div>
-      <div class="row">
-        <span>맞추는 방식:</span>
-        <select id="fitMode">
-          <option value="contain">여백 허용 (잘리지 않음)</option>
-          <option value="cover">꽉 채우게 자르기 (crop)</option>
-          <option value="fill">강제로 늘이기 (stretch)</option>
-        </select>
-      </div>
-      <div class="options-grid" style="margin-top:10px;">
-        <label>
-          <input type="checkbox" id="doResize" checked />
-          크기 조절 사용
-        </label>
-        <label>
-          <input type="checkbox" id="makeTransparent" checked />
-          밝은 배경을 투명하게
-        </label>
-      </div>
-    </div>
-
-    <!-- STEP 3. 색감 & 대비 -->
-    <div class="section-title">3. 색감 & 대비</div>
-    <div class="section-box">
-      <div class="slider-row">
-        <span>밝기</span>
-        <input type="range" id="brightness" min="-50" max="50" value="0" />
-        <span id="brightnessVal">0</span>
-      </div>
-      <div class="slider-row">
-        <span>채도</span>
-        <input type="range" id="saturation" min="-50" max="50" value="0" />
-        <span id="saturationVal">0</span>
-      </div>
-      <div class="slider-row">
-        <span>대비</span>
-        <input type="range" id="contrast" min="-50" max="50" value="0" />
-        <span id="contrastVal">0</span>
-      </div>
-      <div class="slider-row">
-        <span>색조</span>
-        <input type="range" id="hue" min="-180" max="180" value="0" />
-        <span id="hueVal">0</span>
-      </div>
-    </div>
-
-    <!-- STEP 4. 라인 & 스타일 -->
-    <div class="section-title">4. 라인 & 스타일</div>
-    <div class="section-box">
-      <div class="slider-row">
-        <span>라인 굵기</span>
-        <input type="range" id="lineStrength" min="-50" max="50" value="0" />
-        <span id="lineStrengthVal">0</span>
-      </div>
-      <div class="row" style="margin-top:8px;">
-        <span>선 색:</span>
-        <select id="lineColor">
-          <option value="original">원본 유지</option>
-          <option value="brown">짙은 갈색</option>
-          <option value="navy">짙은 남색</option>
-          <option value="white">흰색 라인</option>
-        </select>
-      </div>
-    </div>
-
-    <!-- STEP 5. 텍스트 -->
-    <div class="section-title">5. 텍스트 추가 (선택)</div>
-    <div class="section-box">
-      <div class="row" style="margin-bottom:8px;">
-        <span>텍스트 내용:</span>
-        <input type="text" id="overlayText" style="flex:1;min-width:200px;font-size:12px;padding:2px 4px;" placeholder="비워두면 텍스트를 추가하지 않습니다." />
-      </div>
-      <div class="row">
-        <span>글자 크기:</span>
-        <input type="number" id="textSize" class="small-input" value="32" min="8" max="200" />
-        <span>색:</span>
-        <select id="textColor">
-          <option value="white">흰색</option>
-          <option value="black">검정</option>
-          <option value="brown">갈색</option>
-        </select>
-        <span>위치:</span>
-        <select id="textPosition">
-          <option value="bottom">아래 중앙</option>
-          <option value="top">위 중앙</option>
-        </select>
-      </div>
-    </div>
-
-    <!-- 실행 버튼 -->
-    <button id="runBtn">이미지 편집하기</button>
-
-    <!-- 결과 영역 -->
-    <div id="resultArea"></div>
-  </div>
-
-  <script src="app.js"></script>
-</body>
-</html>
+  <text x="50%" y="${y}" text-anchor="middle" class="overlay-text">${safeText}</text>
+</svg>`;
+}
