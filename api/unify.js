@@ -1,11 +1,66 @@
-// api/unify.js – 업로드된 이미지를 편집해서 PNG dataURL로 돌려주는 Vercel 함수 (CommonJS 버전)
+// api/unify.js
+// 업로드된 이미지를 편집해서 PNG dataURL로 돌려주는 Vercel Serverless Function (CommonJS)
 
+// ─────────────────────────────
+//  의존성
+// ─────────────────────────────
 const formidable = require("formidable");
 const fs = require("fs");
 const sharp = require("sharp");
+const { removeBackground } = require("@imgly/background-removal-node");
 
-// 메인 핸들러 함수
-function handler(req, res) {
+// Vercel: sharp 쓰려면 node 런타임 지정
+module.exports.config = {
+  runtime: "nodejs18.x",
+};
+
+// 선 색 옵션 → RGB
+function getLineColorRGB(name) {
+  switch (name) {
+    case "brown":
+      return { r: 80, g: 50, b: 30 };
+    case "navy":
+      return { r: 25, g: 35, b: 80 };
+    case "white":
+      return { r: 245, g: 245, b: 245 };
+    default:
+      return null; // "original"
+  }
+}
+
+// 텍스트 오버레이용 SVG 생성
+function createTextSVG(width, height, text, fontSize, color, position) {
+  const safeText = String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  // 위치: top / bottom
+  let y = Math.round(height * 0.85); // 기본: 아래쪽
+  if (position === "top") {
+    y = Math.round(height * 0.2);
+  }
+
+  return `
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+  <style>
+    .label {
+      fill: ${color};
+      font-size: ${fontSize}px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+  </style>
+  <text x="50%" y="${y}" text-anchor="middle" dominant-baseline="middle" class="label">
+    ${safeText}
+  </text>
+</svg>
+`;
+}
+
+// ─────────────────────────────
+//  메인 Handler
+// ─────────────────────────────
+module.exports = (req, res) => {
   // 메서드 체크
   if (req.method !== "POST") {
     res.statusCode = 405;
@@ -27,19 +82,26 @@ function handler(req, res) {
 
     try {
       // ─────────────────────────────
-      // 폼 값 읽기
+      //  폼 값 읽기
       // ─────────────────────────────
       const doResize = fields.doResize === "1";
-      const width = parseInt(fields.width || "512", 10) || 512;
-      const height = parseInt(fields.height || "512", 10) || 512;
-      const keepRatio = fields.keepRatio === "1"; // sharp fit로 어느 정도 처리됨
-      let fitMode = fields.fitMode || "contain";
-      const makeTransparent = fields.makeTransparent === "1";
+      let width = parseInt(fields.width || "512", 10) || 512;
+      let height = parseInt(fields.height || "512", 10) || 512;
+
+      const keepRatio = fields.keepRatio === "1";
+      let fitMode = fields.fitMode || "contain"; // contain / cover / fill
+      if (!keepRatio) {
+        // 비율 유지 안하면 강제 fill 사용
+        fitMode = "fill";
+      }
+
+      // ✅ 이제 이 플래그는 "AI 배경 제거"를 의미
+      const useAiBackgroundRemoval = fields.makeTransparent === "1";
 
       const brightness = Number(fields.brightness || "0"); // -50 ~ 50
       const saturation = Number(fields.saturation || "0"); // -50 ~ 50
-      const contrast = Number(fields.contrast || "0");     // -50 ~ 50
-      const hue = Number(fields.hue || "0");               // -180 ~ 180
+      const contrast = Number(fields.contrast || "0"); // -50 ~ 50
+      const hue = Number(fields.hue || "0"); // -180 ~ 180
 
       const lineStrength = Number(fields.lineStrength || "0"); // -50 ~ 50
       const lineColorName = fields.lineColor || "original";
@@ -57,26 +119,47 @@ function handler(req, res) {
       };
       const textColor = textColorMap[textColorName] || "#ffffff";
 
-      // fitMode 정리 (sharp 옵션용)
-      if (fitMode !== "contain" && fitMode !== "cover" && fitMode !== "fill") {
-        fitMode = "contain";
-      }
-
       // images 필드를 배열로 정규화
       const raw = files.images;
       const items = Array.isArray(raw) ? raw : [raw].filter(Boolean);
-
       const outImages = [];
 
+      // ─────────────────────────────
+      //  업로드된 각 이미지 처리
+      // ─────────────────────────────
       for (const file of items) {
         if (!file) continue;
 
-        const inputBuffer = fs.readFileSync(file.filepath);
+        // 1) 원본 버퍼 읽기
+        let inputBuffer = fs.readFileSync(file.filepath);
+
+        // 2) AI 배경 제거 (remove.bg 비슷한 오픈소스)
+        if (useAiBackgroundRemoval) {
+          try {
+            // background-removal-node는 Blob 또는 ArrayBuffer를 돌려줌
+            const blobOrArrayBuffer = await removeBackground(inputBuffer);
+
+            if (blobOrArrayBuffer && typeof blobOrArrayBuffer.arrayBuffer === "function") {
+              // Blob 케이스
+              const ab = await blobOrArrayBuffer.arrayBuffer();
+              inputBuffer = Buffer.from(ab);
+            } else if (blobOrArrayBuffer instanceof ArrayBuffer) {
+              // ArrayBuffer 케이스
+              inputBuffer = Buffer.from(blobOrArrayBuffer);
+            } else if (Buffer.isBuffer(blobOrArrayBuffer)) {
+              // 혹시 바로 Buffer를 주는 버전
+              inputBuffer = blobOrArrayBuffer;
+            }
+          } catch (bgErr) {
+            console.error("Background removal error (fallback to original):", bgErr);
+            // 실패해도 그냥 원본으로 진행 (죽지 않게)
+          }
+        }
+
+        // 3) sharp로 로드
         let img = sharp(inputBuffer).ensureAlpha();
 
-        // ─────────────────────────────
-        // 1) 크기/비율/맞추는 방식 처리
-        // ─────────────────────────────
+        // 4) 크기/비율/맞추는 방식 처리
         if (doResize) {
           img = img.resize(width, height, {
             fit: fitMode, // contain / cover / fill
@@ -84,12 +167,10 @@ function handler(req, res) {
           });
         }
 
-        // ─────────────────────────────
-        // 2) 색감 & 대비 조정
-        // ─────────────────────────────
-        const modBright = 1 + brightness / 100;   // 0.5 ~ 1.5
-        const modSat = 1 + saturation / 100;      // 0.5 ~ 1.5
-        const modHue = hue;                       // -180 ~ 180
+        // 5) 색감 & 대비 조정
+        const modBright = 1 + brightness / 100; // 0.5 ~ 1.5
+        const modSat = 1 + saturation / 100; // 0.5 ~ 1.5
+        const modHue = hue; // -180 ~ 180
 
         img = img.modulate({
           brightness: modBright,
@@ -99,88 +180,72 @@ function handler(req, res) {
 
         if (contrast !== 0) {
           const c = contrast / 100; // -0.5 ~ 0.5
-          img = img.linear(1 + c, -128 * c); // 128 기준 대비 조절
+          img = img.linear(1 + c, -128 * c); // 중간값 128 기준
         }
 
-        // ─────────────────────────────
-        // 3) raw 픽셀 접근 (배경 제거, 라인 처리)
-        // ─────────────────────────────
+        // 6) raw 픽셀 접근 (선 굵기/색 조정)
         let { data, info } = await img.raw().toBuffer({ resolveWithObject: true });
         const w = info.width;
         const h = info.height;
-        const channels = info.channels; // 일반적으로 4 (RGBA)
+        const channels = info.channels; // 보통 4 (RGBA)
 
-        const thresholdBg = 225;  // 밝은 배경 기준
-        const thresholdLine = 150; // 선이라고 보는 어두운 기준
-
+        const thresholdLine = 90; // 어두운 선 기준
         const doLine = lineStrength !== 0 || !!lineColor;
         const strength = lineStrength / 50; // -1 ~ 1
 
-        for (let y = 0; y < h; y++) {
-          for (let x = 0; x < w; x++) {
-            const idx = (y * w + x) * channels;
-            const r = data[idx];
-            const g = data[idx + 1];
-            const b = data[idx + 2];
-            const aIndex = idx + 3;
-            const a = data[aIndex];
+        if (doLine) {
+          for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+              const idx = (y * w + x) * channels;
+              const r = data[idx];
+              const g = data[idx + 1];
+              const b = data[idx + 2];
+              const aIndex = idx + 3;
+              const a = data[aIndex];
+              const avg = (r + g + b) / 3;
 
-            const avg = (r + g + b) / 3;
+              if (a === 0) continue; // 완전 투명 픽셀은 스킵
 
-            // 3-1) 배경 제거 (밝은 영역 → 알파 0)
-            if (makeTransparent && avg >= thresholdBg) {
-              data[aIndex] = 0;
-              continue;
-            }
+              // "선"이라고 보는 픽셀
+              if (avg < thresholdLine) {
+                let nr = r;
+                let ng = g;
+                let nb = b;
 
-            if (!doLine) continue;
-            if (a === 0) continue; // 이미 투명하면 패스
+                // 선 굵기 느낌: 진하게 / 연하게
+                if (strength > 0) {
+                  const factor = 1 + strength * 0.8;
+                  nr = Math.max(0, r / factor);
+                  ng = Math.max(0, g / factor);
+                  nb = Math.max(0, b / factor);
+                } else if (strength < 0) {
+                  const factor = 1 + (-strength) * 0.8;
+                  nr = Math.min(255, r * factor);
+                  ng = Math.min(255, g * factor);
+                  nb = Math.min(255, b * factor);
+                }
 
-            // "선"으로 보는 조건
-            if (avg < thresholdLine) {
-              let nr = r;
-              let ng = g;
-              let nb = b;
+                // 선 색 변경
+                if (lineColor) {
+                  nr = lineColor.r;
+                  ng = lineColor.g;
+                  nb = lineColor.b;
+                }
 
-              // 라인 굵기 느낌 (진하게/연하게)
-              if (strength > 0) {
-                const factor = 1 + strength * 0.8;
-                nr = Math.max(0, r / factor);
-                ng = Math.max(0, g / factor);
-                nb = Math.max(0, b / factor);
-              } else if (strength < 0) {
-                const factor = 1 + (-strength) * 0.8;
-                nr = Math.min(255, r * factor);
-                ng = Math.min(255, g * factor);
-                nb = Math.min(255, b * factor);
+                data[idx] = nr;
+                data[idx + 1] = ng;
+                data[idx + 2] = nb;
               }
-
-              // 선 색 변경
-              if (lineColor) {
-                nr = lineColor.r;
-                ng = lineColor.g;
-                nb = lineColor.b;
-              }
-
-              data[idx] = nr;
-              data[idx + 1] = ng;
-              data[idx + 2] = nb;
             }
           }
         }
 
-        // raw 데이터를 다시 sharp 이미지로 감싸기
+        // raw → sharp 이미지 다시 감싸기
         img = sharp(data, {
-          raw: {
-            width: w,
-            height: h,
-            channels,
-          },
+          raw: { width: w, height: h, channels },
         });
 
-        // ─────────────────────────────
-        // 4) 텍스트 추가 (SVG overlay)
-        // ─────────────────────────────
+        // 7) 텍스트 추가 (SVG overlay)
         let outBuffer;
         if (overlayText && overlayText.trim().length > 0) {
           const svg = createTextSVG(w, h, overlayText, textSize, textColor, textPosition);
@@ -209,49 +274,4 @@ function handler(req, res) {
       res.end("Image processing error");
     }
   });
-}
-
-// Vercel용 export
-module.exports = handler;
-module.exports.config = {
-  runtime: "nodejs18.x",
 };
-
-// 선 색 프리셋
-function getLineColorRGB(name) {
-  switch (name) {
-    case "brown":
-      return { r: 80, g: 50, b: 30 };
-    case "navy":
-      return { r: 25, g: 35, b: 80 };
-    case "white":
-      return { r: 245, g: 245, b: 245 };
-    default:
-      return null; // original
-  }
-}
-
-// 텍스트 오버레이용 SVG 생성
-function createTextSVG(width, height, text, fontSize, color, position) {
-  const safeText = String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-
-  let y = height * 0.9; // 기본: 아래 중앙
-  if (position === "top") {
-    y = height * 0.15;
-  }
-
-  return `
-<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-  <style>
-    .overlay-text {
-      fill: ${color};
-      font-size: ${fontSize}px;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-  </style>
-  <text x="50%" y="${y}" text-anchor="middle" class="overlay-text">${safeText}</text>
-</svg>`;
-}
