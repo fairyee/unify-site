@@ -79,17 +79,34 @@
       border-radius: 8px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     }
-    .result-item img {
-      max-width: 260px;
-      max-height: 260px;
+
+    /* ✅ 여기서부터 결과 미리보기 박스 */
+    .result-preview {
+      width: 260px;
+      height: 260px;
       border-radius: 4px;
-      background: #eee;
+
+      /* 투명 배경 확인용 체크무늬 */
+      background-color: #f0f0f0;
+      background-image:
+        linear-gradient(45deg,
+          #d0d0d0 25%, transparent 25%,
+          transparent 50%, #d0d0d0 50%,
+          #d0d0d0 75%, transparent 75%, transparent);
+      background-size: 16px 16px;
+
+      /* 실제 결과 이미지는 background-image 로 입혀짐 */
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: contain;
     }
+
     .download-btn {
       margin-top: 6px;
       padding: 4px 10px;
       font-size: 12px;
       background: #10b981;
+      color: #fff;
     }
     .slider-value {
       display: inline-block;
@@ -105,7 +122,7 @@
   <p class="subtitle">이미지를 업로드하고 배경, 크기, 색, 텍스트 등을 간단히 조정해 보세요.</p>
 
   <form id="editForm">
-    <!-- 이미지 선택 -->
+    <!-- 1. 이미지 선택 -->
     <div class="panel">
       <strong>1. 이미지 선택</strong>
       <label>
@@ -114,7 +131,7 @@
       </label>
     </div>
 
-    <!-- 크기 설정 -->
+    <!-- 2. 크기 설정 -->
     <div class="panel">
       <strong>2. 크기 설정</strong>
       <label>
@@ -143,12 +160,12 @@
       </label>
     </div>
 
-    <!-- 배경 / 색감 -->
+    <!-- 3. 배경 / 색감 -->
     <div class="panel">
       <strong>3. 배경 / 색감</strong>
       <label>
         <input type="checkbox" id="makeTransparent" />
-        밝은 배경 투명 처리 (스캔된 그림의 흰 배경 제거)
+        배경 투명 처리 (첫 픽셀 색과 비슷한 영역 지우기)
       </label>
       <label>
         밝기
@@ -172,7 +189,7 @@
       </label>
     </div>
 
-    <!-- 선(라인) 설정 -->
+    <!-- 4. 선(라인) 설정 -->
     <div class="panel">
       <strong>4. 선(라인) 설정</strong>
       <label>
@@ -190,11 +207,11 @@
         </select>
       </label>
       <small style="color:#777;">
-        ※ 선 인식은 어두운 픽셀 기준이라, 그림체에 따라 결과가 달라질 수 있어요.
+        ※ 선 인식은 어두운 픽셀 기준이라 그림에 따라 결과가 다를 수 있어요.
       </small>
     </div>
 
-    <!-- 텍스트 오버레이 -->
+    <!-- 5. 텍스트 오버레이 -->
     <div class="panel">
       <strong>5. 텍스트 추가 (선택)</strong>
       <label>
@@ -320,13 +337,14 @@
           return;
         }
 
-        // 🔽 이미지 + 다운로드 버튼
+        // 🔽 이미지 + 다운로드 버튼 (미리보기는 div 배경으로)
         data.images.forEach((src, index) => {
           const item = document.createElement("div");
           item.className = "result-item";
 
-          const img = document.createElement("img");
-          img.src = src;
+          const preview = document.createElement("div");
+          preview.className = "result-preview";
+          preview.style.backgroundImage = `url('${src}')`;
 
           const btn = document.createElement("button");
           btn.type = "button";
@@ -342,7 +360,7 @@
             a.remove();
           });
 
-          item.appendChild(img);
+          item.appendChild(preview);
           item.appendChild(btn);
           resultBox.appendChild(item);
         });
