@@ -80,13 +80,12 @@
       box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     }
 
-    /* ✅ 바깥: 체크무늬 (투명 확인용) */
+    /* 바깥 체크무늬 (투명 확인용) */
     .result-preview-frame {
       width: 260px;
       height: 260px;
       border-radius: 4px;
 
-      /* 체크무늬 패턴 */
       background-color: #f0f0f0;
       background-image:
         linear-gradient(45deg,
@@ -101,7 +100,7 @@
       overflow: hidden;
     }
 
-    /* ✅ 안쪽: 결과 PNG를 올리는 레이어 */
+    /* 실제 결과 PNG를 올리는 레이어 */
     .result-preview-img {
       width: 100%;
       height: 100%;
@@ -124,6 +123,11 @@
       font-size: 12px;
       color: #444;
     }
+    .hint {
+      font-size: 12px;
+      color: #777;
+      margin-top: 4px;
+    }
   </style>
 </head>
 <body>
@@ -140,9 +144,30 @@
       </label>
     </div>
 
-    <!-- 2. 크기 설정 -->
+    <!-- 2. 배경 제거 설정 (AI + 예전 방식) -->
     <div class="panel">
-      <strong>2. 크기 설정</strong>
+      <strong>2. 배경 제거</strong>
+      <label>
+        <input type="checkbox" id="useAiBg" checked />
+        AI로 배경 제거 (권장, 더 깔끔함)
+      </label>
+      <div class="hint">
+        사람/동물/물체가 있는 그림, 복잡한 배경에도 잘 동작합니다.<br />
+        첫 사용 시 모델을 불러오느라 약간 느릴 수 있어요.
+      </div>
+      <hr style="margin:12px 0; border:none; border-top:1px solid #eee;" />
+      <label>
+        <input type="checkbox" id="makeTransparent" />
+        단색 배경만 간단하게 투명 처리 (AI 미사용 시에만 사용)
+      </label>
+      <div class="hint">
+        흰(또는 연한 단색) 종이 위에 그린 그림처럼 배경 색이 거의 한 가지일 때만 사용하세요.
+      </div>
+    </div>
+
+    <!-- 3. 크기 설정 -->
+    <div class="panel">
+      <strong>3. 크기 설정</strong>
       <label>
         <input type="checkbox" id="doResize" checked />
         크기 변경 사용
@@ -169,13 +194,9 @@
       </label>
     </div>
 
-    <!-- 3. 배경 / 색감 -->
+    <!-- 4. 색감 -->
     <div class="panel">
-      <strong>3. 배경 / 색감</strong>
-      <label>
-        <input type="checkbox" id="makeTransparent" />
-        배경 투명 처리 (첫 픽셀 색과 비슷한 영역 지우기)
-      </label>
+      <strong>4. 색감</strong>
       <label>
         밝기
         <input type="range" id="brightness" min="-50" max="50" value="0" />
@@ -198,9 +219,9 @@
       </label>
     </div>
 
-    <!-- 4. 선(라인) 설정 -->
+    <!-- 5. 선(라인) 설정 -->
     <div class="panel">
-      <strong>4. 선(라인) 설정</strong>
+      <strong>5. 선(라인) 설정</strong>
       <label>
         선 진하게/연하게
         <input type="range" id="lineStrength" min="-50" max="50" value="0" />
@@ -215,14 +236,14 @@
           <option value="white">화이트</option>
         </select>
       </label>
-      <small style="color:#777;">
+      <div class="hint">
         ※ 선 인식은 어두운 픽셀 기준이라 그림에 따라 결과가 다를 수 있어요.
-      </small>
+      </div>
     </div>
 
-    <!-- 5. 텍스트 오버레이 -->
+    <!-- 6. 텍스트 오버레이 -->
     <div class="panel">
-      <strong>5. 텍스트 추가 (선택)</strong>
+      <strong>6. 텍스트 추가 (선택)</strong>
       <label>
         내용
         <input type="text" id="overlayText" placeholder="예: SAMPLE, DRAFT, 구름양 등" />
@@ -256,11 +277,14 @@
 
   <!-- 결과 영역 -->
   <div class="panel">
-    <strong>6. 결과</strong>
+    <strong>7. 결과</strong>
     <div id="result">아직 결과가 없습니다.</div>
   </div>
 
-  <script>
+  <!-- 🧠 메인 스크립트 (모듈) -->
+  <script type="module">
+    import removeBackground from "https://cdn.skypack.dev/@imgly/background-removal";
+
     // 슬라이더 값 표시
     const sliderPairs = [
       ["brightness", "brightnessVal"],
@@ -292,12 +316,36 @@
         return;
       }
 
+      const useAiBg = document.getElementById("useAiBg").checked;
+
       const fd = new FormData();
 
-      // 파일들
-      for (const file of files) {
-        fd.append("images", file);
+      // 🔹 1) 파일 처리: AI 배경 제거 → 없으면 원본 사용
+      resultBox.textContent = "이미지 배경을 제거하고 있습니다 (AI)...";
+      const fileList = Array.from(files);
+
+      for (const file of fileList) {
+        let workingFile = file;
+
+        if (useAiBg) {
+          try {
+            // AI로 배경 제거 (브라우저에서 실행)
+            const blobNoBg = await removeBackground(file);
+            const cleanName =
+              (file.name.replace(/\.[^/.]+$/, "") || "image") + "-nobg.png";
+            workingFile = new File([blobNoBg], cleanName, {
+              type: "image/png",
+            });
+          } catch (err) {
+            console.error("AI 배경 제거 실패, 원본 사용:", err);
+            // 실패하면 그냥 원본 파일 그대로 사용
+          }
+        }
+
+        fd.append("images", workingFile);
       }
+
+      // 🔹 2) 나머지 옵션들 FormData에 추가
 
       // 크기 관련
       fd.append("doResize", document.getElementById("doResize").checked ? "1" : "0");
@@ -307,7 +355,10 @@
       fd.append("keepRatio", document.getElementById("keepRatio").checked ? "1" : "0");
 
       // 배경 / 색감
-      fd.append("makeTransparent", document.getElementById("makeTransparent").checked ? "1" : "0");
+      // 👉 AI를 쓰면 서버 쪽 단순 배경 제거는 끄기
+      const makeTransparent = !useAiBg && document.getElementById("makeTransparent").checked;
+      fd.append("makeTransparent", makeTransparent ? "1" : "0");
+
       fd.append("brightness", document.getElementById("brightness").value || "0");
       fd.append("saturation", document.getElementById("saturation").value || "0");
       fd.append("contrast", document.getElementById("contrast").value || "0");
@@ -326,7 +377,7 @@
       try {
         runBtn.disabled = true;
         runBtn.textContent = "처리 중...";
-        resultBox.textContent = "서버에서 이미지를 처리하는 중입니다...";
+        resultBox.textContent = "서버에서 이미지를 편집하는 중입니다...";
 
         const res = await fetch("/api/unify", {
           method: "POST",
@@ -346,7 +397,7 @@
           return;
         }
 
-        // 🔽 이미지 + 다운로드 버튼 (체커보드 + PNG 두 레이어)
+        // 결과 미리보기 + 다운로드 버튼
         data.images.forEach((src, index) => {
           const item = document.createElement("div");
           item.className = "result-item";
