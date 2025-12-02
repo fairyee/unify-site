@@ -1,102 +1,360 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>이미지 편집기</title>
-
-<style>
-body {
-  font-family: sans-serif;
-  padding: 20px;
-  background: #fafafa;
-}
-
-#resultBox img{
-  max-width: 200px;
-  margin: 4px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-}
-
-.box{
-  display:inline-flex;
-  flex-direction:column;
-  align-items:center;
-  margin:8px;
-}
-
-button{
-  padding: 6px 14px;
-  margin-top: 4px;
-}
-
-</style>
-
+  <meta charset="UTF-8" />
+  <title>이미지 편집기</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 24px;
+      background: #f5f5f8;
+    }
+    h1 {
+      margin-bottom: 4px;
+    }
+    p.subtitle {
+      margin-top: 0;
+      margin-bottom: 16px;
+      color: #555;
+      font-size: 14px;
+    }
+    .panel {
+      background: #ffffff;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    .panel strong {
+      display: block;
+      margin-bottom: 8px;
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    input[type="number"],
+    input[type="text"],
+    select {
+      padding: 4px 6px;
+      font-size: 13px;
+      margin-left: 4px;
+    }
+    input[type="range"] {
+      width: 180px;
+      vertical-align: middle;
+      margin: 0 4px;
+    }
+    input[type="file"] {
+      margin-top: 6px;
+    }
+    button {
+      padding: 8px 16px;
+      font-size: 14px;
+      border-radius: 6px;
+      border: none;
+      background: #2563eb;
+      color: #fff;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+    #result {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .result-item {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 8px;
+      background: #ffffff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .result-item img {
+      max-width: 260px;
+      max-height: 260px;
+      border-radius: 4px;
+      background: #eee;
+    }
+    .download-btn {
+      margin-top: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      background: #10b981;
+    }
+    .slider-value {
+      display: inline-block;
+      min-width: 24px;
+      text-align: right;
+      font-size: 12px;
+      color: #444;
+    }
+  </style>
 </head>
 <body>
+  <h1>이미지 편집기</h1>
+  <p class="subtitle">이미지를 업로드하고 배경, 크기, 색, 텍스트 등을 간단히 조정해 보세요.</p>
 
-<h2>이미지 편집기</h2>
+  <form id="editForm">
+    <!-- 이미지 선택 -->
+    <div class="panel">
+      <strong>1. 이미지 선택</strong>
+      <label>
+        편집할 이미지(여러 장 가능)
+        <input type="file" id="images" name="images" multiple accept="image/*" />
+      </label>
+    </div>
 
-<form id="editForm">
-  <input type="file" name="images" id="images" multiple><br><br>
-  <button type="submit">이미지 편집하기</button>
-</form>
+    <!-- 크기 설정 -->
+    <div class="panel">
+      <strong>2. 크기 설정</strong>
+      <label>
+        <input type="checkbox" id="doResize" checked />
+        크기 변경 사용
+      </label>
+      <label>
+        너비
+        <input type="number" id="width" value="512" min="16" max="4096" /> px
+      </label>
+      <label>
+        높이
+        <input type="number" id="height" value="512" min="16" max="4096" /> px
+      </label>
+      <label>
+        비율 유지
+        <input type="checkbox" id="keepRatio" checked />
+      </label>
+      <label>
+        맞추는 방식
+        <select id="fitMode">
+          <option value="contain">contain (잘리지 않고 여백)</option>
+          <option value="cover">cover (잘라도 꽉 채우기)</option>
+          <option value="fill">fill (비율 무시하고 강제)</option>
+        </select>
+      </label>
+    </div>
 
-<hr>
+    <!-- 배경 / 색감 -->
+    <div class="panel">
+      <strong>3. 배경 / 색감</strong>
+      <label>
+        <input type="checkbox" id="makeTransparent" />
+        밝은 배경 투명 처리 (스캔된 그림의 흰 배경 제거)
+      </label>
+      <label>
+        밝기
+        <input type="range" id="brightness" min="-50" max="50" value="0" />
+        <span class="slider-value" id="brightnessVal">0</span>
+      </label>
+      <label>
+        채도
+        <input type="range" id="saturation" min="-50" max="50" value="0" />
+        <span class="slider-value" id="saturationVal">0</span>
+      </label>
+      <label>
+        대비
+        <input type="range" id="contrast" min="-50" max="50" value="0" />
+        <span class="slider-value" id="contrastVal">0</span>
+      </label>
+      <label>
+        색조(Hue)
+        <input type="range" id="hue" min="-180" max="180" value="0" />
+        <span class="slider-value" id="hueVal">0</span>
+      </label>
+    </div>
 
-<h3>결과</h3>
-<div id="resultBox"></div>
+    <!-- 선(라인) 설정 -->
+    <div class="panel">
+      <strong>4. 선(라인) 설정</strong>
+      <label>
+        선 진하게/연하게
+        <input type="range" id="lineStrength" min="-50" max="50" value="0" />
+        <span class="slider-value" id="lineStrengthVal">0</span>
+      </label>
+      <label>
+        선 색상
+        <select id="lineColor">
+          <option value="original">원래 색</option>
+          <option value="brown">브라운</option>
+          <option value="navy">네이비</option>
+          <option value="white">화이트</option>
+        </select>
+      </label>
+      <small style="color:#777;">
+        ※ 선 인식은 어두운 픽셀 기준이라, 그림체에 따라 결과가 달라질 수 있어요.
+      </small>
+    </div>
 
-<script>
-const form = document.getElementById("editForm");
-const resultBox = document.getElementById("resultBox");
+    <!-- 텍스트 오버레이 -->
+    <div class="panel">
+      <strong>5. 텍스트 추가 (선택)</strong>
+      <label>
+        내용
+        <input type="text" id="overlayText" placeholder="예: SAMPLE, DRAFT, 구름양 등" />
+      </label>
+      <label>
+        글자 크기
+        <input type="number" id="textSize" value="32" min="8" max="200" /> px
+      </label>
+      <label>
+        글자 색
+        <select id="textColor">
+          <option value="white">화이트</option>
+          <option value="black">블랙</option>
+          <option value="brown">브라운</option>
+        </select>
+      </label>
+      <label>
+        위치
+        <select id="textPosition">
+          <option value="bottom">아래쪽</option>
+          <option value="top">위쪽</option>
+        </select>
+      </label>
+    </div>
 
-form.addEventListener("submit", async (e)=>{
-  e.preventDefault();
-  resultBox.innerHTML = "처리중...";
+    <!-- 실행 버튼 -->
+    <div class="panel">
+      <button type="submit" id="runBtn">이미지 편집하기</button>
+    </div>
+  </form>
 
-  const fd = new FormData();
-  const files = document.getElementById("images").files;
-  for(let f of files){
-    fd.append("images", f);
-  }
+  <!-- 결과 영역 -->
+  <div class="panel">
+    <strong>6. 결과</strong>
+    <div id="result">아직 결과가 없습니다.</div>
+  </div>
 
-  const res = await fetch("/api/unify", {
-    method:"POST",
-    body:fd,
-  });
+  <script>
+    // 슬라이더 값 표시
+    const sliderPairs = [
+      ["brightness", "brightnessVal"],
+      ["saturation", "saturationVal"],
+      ["contrast", "contrastVal"],
+      ["hue", "hueVal"],
+      ["lineStrength", "lineStrengthVal"],
+    ];
 
-  const data = await res.json();
-  resultBox.innerHTML = "";
-
-  // 이미지 + 다운로드 버튼
-  data.images.forEach((src, index) => {
-
-    const wrap = document.createElement("div");
-    wrap.className = "box";
-
-    const img = document.createElement("img");
-    img.src = src;
-
-    const btn = document.createElement("button");
-    btn.textContent = "다운로드";
-    btn.addEventListener("click", ()=>{
-      const a = document.createElement("a");
-      a.href = src;
-      a.download = `edited-${index+1}.png`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+    sliderPairs.forEach(([inputId, labelId]) => {
+      const input = document.getElementById(inputId);
+      const label = document.getElementById(labelId);
+      label.textContent = input.value;
+      input.addEventListener("input", () => {
+        label.textContent = input.value;
+      });
     });
 
-    wrap.appendChild(img);
-    wrap.appendChild(btn);
-    resultBox.appendChild(wrap);
-  });
+    const form = document.getElementById("editForm");
+    const resultBox = document.getElementById("result");
+    const runBtn = document.getElementById("runBtn");
 
-});
-</script>
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
 
+      const files = document.getElementById("images").files;
+      if (!files || files.length === 0) {
+        alert("이미지를 선택해 주세요.");
+        return;
+      }
+
+      const fd = new FormData();
+
+      // 파일들
+      for (const file of files) {
+        fd.append("images", file);
+      }
+
+      // 크기 관련
+      fd.append("doResize", document.getElementById("doResize").checked ? "1" : "0");
+      fd.append("width", document.getElementById("width").value || "512");
+      fd.append("height", document.getElementById("height").value || "512");
+      fd.append("fitMode", document.getElementById("fitMode").value);
+      fd.append("keepRatio", document.getElementById("keepRatio").checked ? "1" : "0");
+
+      // 배경 / 색감
+      fd.append("makeTransparent", document.getElementById("makeTransparent").checked ? "1" : "0");
+      fd.append("brightness", document.getElementById("brightness").value || "0");
+      fd.append("saturation", document.getElementById("saturation").value || "0");
+      fd.append("contrast", document.getElementById("contrast").value || "0");
+      fd.append("hue", document.getElementById("hue").value || "0");
+
+      // 라인
+      fd.append("lineStrength", document.getElementById("lineStrength").value || "0");
+      fd.append("lineColor", document.getElementById("lineColor").value);
+
+      // 텍스트
+      fd.append("overlayText", document.getElementById("overlayText").value || "");
+      fd.append("textSize", document.getElementById("textSize").value || "32");
+      fd.append("textColor", document.getElementById("textColor").value);
+      fd.append("textPosition", document.getElementById("textPosition").value);
+
+      try {
+        runBtn.disabled = true;
+        runBtn.textContent = "처리 중...";
+        resultBox.textContent = "서버에서 이미지를 처리하는 중입니다...";
+
+        const res = await fetch("/api/unify", {
+          method: "POST",
+          body: fd,
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || ("HTTP " + res.status));
+        }
+
+        const data = await res.json();
+        resultBox.innerHTML = "";
+
+        if (!data.images || data.images.length === 0) {
+          resultBox.textContent = "결과 이미지가 없습니다.";
+          return;
+        }
+
+        // 🔽 이미지 + 다운로드 버튼
+        data.images.forEach((src, index) => {
+          const item = document.createElement("div");
+          item.className = "result-item";
+
+          const img = document.createElement("img");
+          img.src = src;
+
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "download-btn";
+          btn.textContent = "다운로드";
+
+          btn.addEventListener("click", () => {
+            const a = document.createElement("a");
+            a.href = src;
+            a.download = `edited-image-${index + 1}.png`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+          });
+
+          item.appendChild(img);
+          item.appendChild(btn);
+          resultBox.appendChild(item);
+        });
+      } catch (err) {
+        console.error(err);
+        alert("처리 중 오류가 발생했습니다: " + err.message);
+        resultBox.textContent = "오류: " + err.message;
+      } finally {
+        runBtn.disabled = false;
+        runBtn.textContent = "이미지 편집하기";
+      }
+    });
+  </script>
 </body>
 </html>
