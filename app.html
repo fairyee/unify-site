@@ -262,11 +262,40 @@
           return;
         }
 
-        data.images.forEach((src) => {
-          const img = document.createElement("img");
-          img.src = src;
-          resultBox.appendChild(img);
-        });
+      data.images.forEach((src, index) => {
+  // 감싸는 박스
+  const box = document.createElement("div");
+  box.style.display = "inline-flex";
+  box.style.flexDirection = "column";
+  box.style.alignItems = "center";
+  box.style.margin = "8px";
+
+  // 이미지
+  const img = document.createElement("img");
+  img.src = src;
+
+  // 다운로드 버튼
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = "다운로드";
+  btn.style.marginTop = "4px";
+  btn.style.fontSize = "12px";
+  btn.style.padding = "4px 8px";
+
+  btn.addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = src;
+    a.download = `edited-image-${index + 1}.png`; // 저장될 파일 이름
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+
+  box.appendChild(img);
+  box.appendChild(btn);
+  resultBox.appendChild(box);
+});
+
       } catch (err) {
         console.error(err);
         alert("처리 중 오류가 발생했습니다: " + err.message);
