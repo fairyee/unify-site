@@ -1,258 +1,281 @@
-// api/unify.js – 업로드된 이미지를 편집해서 PNG dataURL로 돌려주는 Vercel 함수 (CommonJS 버전)
-
-// Vercel Node.js Serverless Function에서는 require / module.exports 방식이 안전함
-const formidable = require("formidable");
-const fs = require("fs");
-const sharp = require("sharp");
-
-// Vercel에게 "이 함수는 Node 런타임에서 돌려라"라고 알려줌 (sharp 쓰려면 필요)
-module.exports.config = {
-  runtime: "nodejs18.x",
-};
-
-function getLineColorRGB(name) {
-  switch (name) {
-    case "brown":
-      return { r: 80, g: 50, b: 30 };
-    case "navy":
-      return { r: 25, g: 35, b: 80 };
-    case "white":
-      return { r: 245, g: 245, b: 245 };
-    default:
-      return null; // original
-  }
-}
-
-module.exports = (req, res) => {
-  // 메서드 체크
-  if (req.method !== "POST") {
-    res.statusCode = 405;
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.end("Method not allowed");
-    return;
-  }
-
-  const form = formidable({ multiples: true });
-
-  form.parse(req, async (err, fields, files) => {
-    if (err) {
-      console.error("Form parse error:", err);
-      res.statusCode = 500;
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end("Form parse error");
-      return;
-    }
-
-    try {
-      // ─────────────────────────────
-      //  폼 값 읽기
-      // ─────────────────────────────
-      const doResize = fields.doResize === "1";
-      const width = parseInt(fields.width || "512", 10) || 512;
-      const height = parseInt(fields.height || "512", 10) || 512;
-      const keepRatio = fields.keepRatio === "1";
-      let fitMode = fields.fitMode || "contain";
-      const makeTransparent = fields.makeTransparent === "1";
-
-      const brightness = Number(fields.brightness || "0"); // -50 ~ 50
-      const saturation = Number(fields.saturation || "0"); // -50 ~ 50
-      const contrast = Number(fields.contrast || "0");     // -50 ~ 50
-      const hue = Number(fields.hue || "0");               // -180 ~ 180
-
-      const lineStrength = Number(fields.lineStrength || "0"); // -50 ~ 50
-      const lineColorName = fields.lineColor || "original";
-      const lineColor = getLineColorRGB(lineColorName);
-
-      const overlayText = (fields.overlayText || "").toString();
-      const textSize = parseInt(fields.textSize || "32", 10) || 32;
-      const textColorName = fields.textColor || "white";
-      const textPosition = fields.textPosition || "bottom";
-
-      const textColorMap = {
-        white: "#ffffff",
-        black: "#000000",
-        brown: "#553322",
-      };
-      const textColor = textColorMap[textColorName] || "#ffffff";
-
-      // fitMode 정리 (sharp 옵션용)
-      if (fitMode !== "contain" && fitMode !== "cover" && fitMode !== "fill") {
-        fitMode = "contain";
-      }
-
-      // images 필드를 배열로 정규화
-      const raw = files.images;
-      const items = Array.isArray(raw) ? raw : [raw].filter(Boolean);
-
-      const outImages = [];
-
-      for (const file of items) {
-        if (!file) continue;
-
-        const inputBuffer = fs.readFileSync(file.filepath);
-        let img = sharp(inputBuffer).ensureAlpha();
-
-        // ─────────────────────────────
-        // 1) 크기/비율/맞추는 방식 처리
-        // ─────────────────────────────
-        if (doResize) {
-          // keepRatio는 fitMode가 contain/cover일 때 이미 처리되기 때문에,
-          // 여기서는 fitMode만 sharp에 넘겨줌.
-          // fill은 비율 무시하고 강제 늘이기.
-          img = img.resize(width, height, {
-            fit: fitMode, // contain / cover / fill
-            background: { r: 0, g: 0, b: 0, alpha: 0 },
-          });
-        }
-
-        // ─────────────────────────────
-        // 2) 색감 & 대비 조정
-        // ─────────────────────────────
-        const modBright = 1 + brightness / 100;   // 0.5 ~ 1.5
-        const modSat = 1 + saturation / 100;      // 0.5 ~ 1.5
-        const modHue = hue;                       // -180 ~ 180
-
-        img = img.modulate({
-          brightness: modBright,
-          saturation: modSat,
-          hue: modHue,
-        });
-
-        if (contrast !== 0) {
-          const c = contrast / 100; // -0.5 ~ 0.5
-          img = img.linear(1 + c, -128 * c); // 128 기준 대비 조절
-        }
-
-        // ─────────────────────────────
-        // 3) raw 픽셀 접근 (배경 제거, 라인 처리)
-        // ─────────────────────────────
-        let { data, info } = await img.raw().toBuffer({ resolveWithObject: true });
-        const w = info.width;
-        const h = info.height;
-        const channels = info.channels; // 일반적으로 4 (RGBA)
-
-        const thresholdBg = 240;  // 밝은 배경 기준
-        const thresholdLine = 90; // 선이라고 보는 어두운 기준
-
-        const doLine = lineStrength !== 0 || !!lineColor;
-        const strength = lineStrength / 50; // -1 ~ 1
-
-        for (let y = 0; y < h; y++) {
-          for (let x = 0; x < w; x++) {
-            const idx = (y * w + x) * channels;
-            const r = data[idx];
-            const g = data[idx + 1];
-            const b = data[idx + 2];
-            const aIndex = idx + 3;
-            const a = data[aIndex];
-
-            const avg = (r + g + b) / 3;
-
-            // 3-1) 배경 제거 (밝은 영역 → 알파 0)
-            if (makeTransparent && avg >= thresholdBg) {
-              data[aIndex] = 0;
-              continue;
-            }
-
-            if (!doLine) continue;
-            if (a === 0) continue; // 이미 투명하면 패스
-
-            // "선"으로 보는 조건
-            if (avg < thresholdLine) {
-              let nr = r;
-              let ng = g;
-              let nb = b;
-
-              // 라인 굵기 느낌 (진하게/연하게)
-              if (strength > 0) {
-                const factor = 1 + strength * 0.8;
-                nr = Math.max(0, r / factor);
-                ng = Math.max(0, g / factor);
-                nb = Math.max(0, b / factor);
-              } else if (strength < 0) {
-                const factor = 1 + (-strength) * 0.8;
-                nr = Math.min(255, r * factor);
-                ng = Math.min(255, g * factor);
-                nb = Math.min(255, b * factor);
-              }
-
-              // 선 색 변경
-              if (lineColor) {
-                nr = lineColor.r;
-                ng = lineColor.g;
-                nb = lineColor.b;
-              }
-
-              data[idx] = nr;
-              data[idx + 1] = ng;
-              data[idx + 2] = nb;
-            }
-          }
-        }
-
-        // raw 데이터를 다시 sharp 이미지로 감싸기
-        img = sharp(data, {
-          raw: {
-            width: w,
-            height: h,
-            channels,
-          },
-        });
-
-        // ─────────────────────────────
-        // 4) 텍스트 추가 (SVG overlay)
-        // ─────────────────────────────
-        let outBuffer;
-        if (overlayText && overlayText.trim().length > 0) {
-          const svg = createTextSVG(w, h, overlayText, textSize, textColor, textPosition);
-          const svgBuffer = Buffer.from(svg);
-
-          outBuffer = await img
-            .composite([{ input: svgBuffer, top: 0, left: 0 }])
-            .png()
-            .toBuffer();
-        } else {
-          outBuffer = await img.png().toBuffer();
-        }
-
-        const base64 = "data:image/png;base64," + outBuffer.toString("base64");
-        outImages.push(base64);
-      }
-
-      // 최종 응답
-      res.statusCode = 200;
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.end(JSON.stringify({ images: outImages }));
-    } catch (e) {
-      console.error("Processing error:", e);
-      res.statusCode = 500;
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end("Image processing error");
-    }
-  });
-};
-
-// 텍스트 오버레이용 SVG 생성
-function createTextSVG(width, height, text, fontSize, color, position) {
-  const safeText = String(text)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-
-  let y = height * 0.9; // 기본: 아래 중앙
-  if (position === "top") {
-    y = height * 0.15;
-  }
-
-  return `
-
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>이미지 편집기</title>
   <style>
-    .overlay-text {
-      fill: ${color};
-      font-size: ${fontSize}px;
+    body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 24px;
+      background: #f5f5f8;
+    }
+    h1 {
+      margin-bottom: 8px;
+    }
+    .panel {
+      background: #ffffff;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+    input[type="number"],
+    input[type="text"],
+    select {
+      padding: 4px 6px;
+      font-size: 14px;
+      margin-left: 4px;
+    }
+    input[type="range"] {
+      width: 180px;
+      vertical-align: middle;
+      margin: 0 4px;
+    }
+    button {
+      padding: 8px 16px;
+      font-size: 14px;
+      border-radius: 6px;
+      border: none;
+      background: #2563eb;
+      color: #fff;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+    #result img {
+      max-width: 260px;
+      max-height: 260px;
+      margin: 8px;
+      border-radius: 4px;
+      background: #eee;
     }
   </style>
-  <text x="50%" y="${y}" text-anchor="middle" class="overlay-text">${safeText}</text>
-</svg>`;
-}
+</head>
+<body>
+  <h1>이미지 편집기</h1>
+  <p>이미지를 업로드하고 크기, 배경, 색감 등을 간단히 조정해 보세요.</p>
+
+  <form id="editForm">
+    <div class="panel">
+      <label>
+        이미지 선택
+        <input type="file" id="images" name="images" multiple accept="image/*">
+      </label>
+    </div>
+
+    <div class="panel">
+      <strong>크기 설정</strong>
+      <label>
+        <input type="checkbox" id="doResize" checked>
+        크기 변경 사용
+      </label>
+      <label>
+        너비
+        <input type="number" id="width" value="512" min="16" max="4096">
+      </label>
+      <label>
+        높이
+        <input type="number" id="height" value="512" min="16" max="4096">
+      </label>
+      <label>
+        맞추는 방식
+        <select id="fitMode">
+          <option value="contain">contain (잘리지 않고 여백)</option>
+          <option value="cover">cover (잘라도 꽉 채우기)</option>
+          <option value="fill">fill (비율 무시하고 강제)</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="panel">
+      <strong>배경 / 색감</strong>
+      <label>
+        <input type="checkbox" id="makeTransparent">
+        밝은 배경 투명 처리
+      </label>
+      <label>
+        밝기
+        <input type="range" id="brightness" min="-50" max="50" value="0">
+        <span id="brightnessVal">0</span>
+      </label>
+      <label>
+        채도
+        <input type="range" id="saturation" min="-50" max="50" value="0">
+        <span id="saturationVal">0</span>
+      </label>
+      <label>
+        대비
+        <input type="range" id="contrast" min="-50" max="50" value="0">
+        <span id="contrastVal">0</span>
+      </label>
+      <label>
+        색조 (Hue)
+        <input type="range" id="hue" min="-180" max="180" value="0">
+        <span id="hueVal">0</span>
+      </label>
+    </div>
+
+    <div class="panel">
+      <strong>선(라인) 설정</strong>
+      <label>
+        선 진하게/연하게
+        <input type="range" id="lineStrength" min="-50" max="50" value="0">
+        <span id="lineStrengthVal">0</span>
+      </label>
+      <label>
+        선 색상
+        <select id="lineColor">
+          <option value="original">원래 색</option>
+          <option value="brown">브라운</option>
+          <option value="navy">네이비</option>
+          <option value="white">화이트</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="panel">
+      <strong>텍스트 추가 (선택)</strong>
+      <label>
+        내용
+        <input type="text" id="overlayText" placeholder="예: SAMPLE, DRAFT 등">
+      </label>
+      <label>
+        글자 크기
+        <input type="number" id="textSize" value="32" min="8" max="200">
+      </label>
+      <label>
+        글자 색
+        <select id="textColor">
+          <option value="white">화이트</option>
+          <option value="black">블랙</option>
+          <option value="brown">브라운</option>
+        </select>
+      </label>
+      <label>
+        위치
+        <select id="textPosition">
+          <option value="bottom">아래쪽</option>
+          <option value="top">위쪽</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="panel">
+      <button type="submit" id="runBtn">이미지 편집하기</button>
+    </div>
+  </form>
+
+  <div class="panel">
+    <strong>결과</strong>
+    <div id="result">아직 결과가 없습니다.</div>
+  </div>
+
+  <script>
+    // 슬라이더 값 표시
+    const sliders = [
+      ["brightness", "brightnessVal"],
+      ["saturation", "saturationVal"],
+      ["contrast", "contrastVal"],
+      ["hue", "hueVal"],
+      ["lineStrength", "lineStrengthVal"],
+    ];
+    sliders.forEach(([id, labelId]) => {
+      const input = document.getElementById(id);
+      const label = document.getElementById(labelId);
+      input.addEventListener("input", () => {
+        label.textContent = input.value;
+      });
+    });
+
+    const form = document.getElementById("editForm");
+    const resultBox = document.getElementById("result");
+    const runBtn = document.getElementById("runBtn");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+
+      const files = document.getElementById("images").files;
+      if (!files || files.length === 0) {
+        alert("이미지를 선택해 주세요.");
+        return;
+      }
+
+      const fd = new FormData();
+      // 파일들
+      for (const file of files) {
+        fd.append("images", file);
+      }
+
+      // 크기 관련
+      fd.append("doResize", document.getElementById("doResize").checked ? "1" : "0");
+      fd.append("width", document.getElementById("width").value || "512");
+      fd.append("height", document.getElementById("height").value || "512");
+      fd.append("fitMode", document.getElementById("fitMode").value);
+      fd.append("keepRatio", "1"); // 지금은 항상 비율 유지로
+
+      // 배경 / 색감
+      fd.append("makeTransparent", document.getElementById("makeTransparent").checked ? "1" : "0");
+      fd.append("brightness", document.getElementById("brightness").value || "0");
+      fd.append("saturation", document.getElementById("saturation").value || "0");
+      fd.append("contrast", document.getElementById("contrast").value || "0");
+      fd.append("hue", document.getElementById("hue").value || "0");
+
+      // 라인
+      fd.append("lineStrength", document.getElementById("lineStrength").value || "0");
+      fd.append("lineColor", document.getElementById("lineColor").value);
+
+      // 텍스트
+      fd.append("overlayText", document.getElementById("overlayText").value || "");
+      fd.append("textSize", document.getElementById("textSize").value || "32");
+      fd.append("textColor", document.getElementById("textColor").value);
+      fd.append("textPosition", document.getElementById("textPosition").value);
+
+      try {
+        runBtn.disabled = true;
+        runBtn.textContent = "처리 중...";
+        resultBox.textContent = "서버에서 이미지를 처리하는 중입니다...";
+
+        const res = await fetch("/api/unify", {
+          method: "POST",
+          body: fd,
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || ("HTTP " + res.status));
+        }
+
+        const data = await res.json();
+        resultBox.innerHTML = "";
+
+        if (!data.images || data.images.length === 0) {
+          resultBox.textContent = "결과 이미지가 없습니다.";
+          return;
+        }
+
+        data.images.forEach((src) => {
+          const img = document.createElement("img");
+          img.src = src;
+          resultBox.appendChild(img);
+        });
+      } catch (err) {
+        console.error(err);
+        alert("처리 중 오류가 발생했습니다: " + err.message);
+        resultBox.textContent = "오류: " + err.message;
+      } finally {
+        runBtn.disabled = false;
+        runBtn.textContent = "이미지 편집하기";
+      }
+    });
+  </script>
+</body>
+</html>
