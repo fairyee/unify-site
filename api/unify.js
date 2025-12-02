@@ -110,8 +110,8 @@ function handler(req, res) {
         const h = info.height;
         const channels = info.channels; // 일반적으로 4 (RGBA)
 
-        const thresholdBg = 240;  // 밝은 배경 기준
-        const thresholdLine = 90; // 선이라고 보는 어두운 기준
+        const thresholdBg = 225;  // 밝은 배경 기준
+        const thresholdLine = 150; // 선이라고 보는 어두운 기준
 
         const doLine = lineStrength !== 0 || !!lineColor;
         const strength = lineStrength / 50; // -1 ~ 1
